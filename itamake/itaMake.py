@@ -7,6 +7,7 @@
 # Copyright © 2010-2012 Matteo Boscariol <boscarim@hotmail.com>
 # Copyright © 2013 Luca Wehrstedt <luca.wehrstedt@gmail.com>
 # Copyright © 2014-2015 Luca Versari <veluca93@gmail.com>
+# Copyright © 2016 William Di Luigi <williamdiluigi@gmail.com>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -37,9 +38,7 @@ import tempfile
 import yaml
 import logging
 
-from cms import utf8_decoder
-from cms.grading import get_compilation_commands
-from cmstaskenv.Test import test_testcases, clean_test_env
+from cmscommon import get_compilation_commands, utf8_decoder
 from cmscommon.terminal import move_cursor, add_color_to_string, \
     colors, directions
 
@@ -167,122 +166,6 @@ def noop():
     pass
 
 
-def build_sols_list(base_dir, task_type, in_out_files, yaml_conf):
-    if yaml_conf.get('only_gen', False):
-        return []
-
-    sol_dir = os.path.join(base_dir, SOL_DIRNAME)
-
-    actions = []
-    test_actions = []
-    for src in (os.path.join(SOL_DIRNAME, x)
-                for x in os.listdir(sol_dir)
-                if endswith2(x, SOL_EXTS)):
-        exe, lang = basename2(src, SOL_EXTS)
-        # Delete the dot
-        lang = lang[1:]
-        exe_EVAL = "%s_EVAL" % (exe)
-
-        # Ignore things known to be auxiliary files
-        if exe == os.path.join(SOL_DIRNAME, GRAD_BASENAME):
-            continue
-        if exe == os.path.join(SOL_DIRNAME, STUB_BASENAME):
-            continue
-        if lang == 'pas' and exe.endswith('lib'):
-            continue
-
-        srcs = []
-        # The grader, when present, must be in the first position of
-        # srcs; see docstring of get_compilation_commands().
-        if task_type == ['Batch', 'Grad'] or \
-                task_type == ['Batch', 'GradComp']:
-            srcs.append(os.path.join(SOL_DIRNAME,
-                                     GRAD_BASENAME + '.%s' % (lang)))
-        if task_type == ['Communication', '']:
-            srcs.append(os.path.join(SOL_DIRNAME,
-                                     STUB_BASENAME + '.%s' % (lang)))
-        srcs.append(src)
-
-        test_deps = [exe_EVAL] + in_out_files
-        if task_type == ['Batch', 'Comp'] or \
-                task_type == ['Batch', 'GradComp']:
-            test_deps.append('cor/correttore')
-        if task_type == ['Communication', '']:
-            test_deps.append('cor/manager')
-
-        def compile_src(srcs, exe, for_evaluation, lang, assume=None):
-            if lang != 'pas' or len(srcs) == 1:
-                compilation_commands = get_compilation_commands(
-                    lang,
-                    srcs,
-                    exe,
-                    for_evaluation=for_evaluation)
-                for command in compilation_commands:
-                    call(base_dir, command)
-                    move_cursor(directions.UP, erase=True, stream=sys.stderr)
-
-            # When using Pascal with graders, file naming conventions
-            # require us to do a bit of trickery, i.e., performing the
-            # compilation in a separate temporary directory
-            else:
-                tempdir = tempfile.mkdtemp()
-                task_name = detect_task_name(base_dir)
-                new_srcs = [os.path.split(srcs[0])[1],
-                            '%s.pas' % (task_name)]
-                new_exe = os.path.split(srcs[1])[1][:-4]
-                shutil.copyfile(os.path.join(base_dir, srcs[0]),
-                                os.path.join(tempdir, new_srcs[0]))
-                shutil.copyfile(os.path.join(base_dir, srcs[1]),
-                                os.path.join(tempdir, new_srcs[1]))
-                lib_filename = '%slib.pas' % (task_name)
-                if os.path.exists(os.path.join(SOL_DIRNAME, lib_filename)):
-                    shutil.copyfile(os.path.join(SOL_DIRNAME, lib_filename),
-                                    os.path.join(tempdir, lib_filename))
-                compilation_commands = get_compilation_commands(
-                    lang,
-                    new_srcs,
-                    new_exe,
-                    for_evaluation=for_evaluation)
-                for command in compilation_commands:
-                    call(tempdir, command)
-                    move_cursor(directions.UP, erase=True, stream=sys.stderr)
-                shutil.copyfile(os.path.join(tempdir, new_exe),
-                                os.path.join(base_dir, exe))
-                shutil.copymode(os.path.join(tempdir, new_exe),
-                                os.path.join(base_dir, exe))
-                shutil.rmtree(tempdir)
-
-        def test_src(exe, lang, assume=None):
-            # Solution names begin with sol/ and end with _EVAL, we strip that
-            print(
-                "Testing solution",
-                add_color_to_string(exe[4:-5], colors.BLACK, bold=True)
-            )
-            test_testcases(
-                base_dir,
-                exe,
-                language=lang,
-                assume=assume)
-
-        actions.append(
-            (srcs,
-             [exe],
-             functools.partial(compile_src, srcs, exe, False, lang),
-             'compile solution'))
-        actions.append(
-            (srcs,
-             [exe_EVAL],
-             functools.partial(compile_src, srcs, exe_EVAL, True, lang),
-             'compile solution with -DEVAL'))
-
-        test_actions.append((test_deps,
-                             ['test_%s' % (os.path.split(exe)[1])],
-                             functools.partial(test_src, exe_EVAL, lang),
-                             'test solution (compiled with -DEVAL)'))
-
-    return actions + test_actions
-
-
 def build_checker_list(base_dir, task_type):
     check_dir = os.path.join(base_dir, CHECK_DIRNAME)
     actions = []
@@ -369,7 +252,9 @@ def build_gen_list(base_dir, task_type, yaml_conf):
     input_dir = os.path.join(base_dir, INPUT_DIRNAME)
     output_dir = os.path.join(base_dir, OUTPUT_DIRNAME)
     gen_dir = os.path.join(base_dir, GEN_DIRNAME)
+    sol_dir = os.path.join(base_dir, SOL_DIRNAME)
     gen_exe = None
+    sol_exe = None
     validator_exe = None
 
     for src in (x for x in os.listdir(gen_dir) if endswith2(x, GEN_EXTS)):
@@ -382,13 +267,20 @@ def build_gen_list(base_dir, task_type, yaml_conf):
             validator_exe = os.path.join(GEN_DIRNAME, base)
             validator_src = os.path.join(GEN_DIRNAME, base + lang)
             validator_lang = lang[1:]
+
+    for src in (x for x in os.listdir(sol_dir) if endswith2(x, SOL_EXTS)):
+        base, lang = basename2(src, SOL_EXTS)
+        if base == SOL_FILENAME:
+            assert sol_exe is None, "There are multiple solutions for output generation"
+            sol_exe = os.path.join(SOL_DIRNAME, base)
+            sol_src = os.path.join(SOL_DIRNAME, base + lang)
+            sol_lang = lang[1:]
+
     if gen_exe is None:
         raise Exception("Couldn't find generator")
     if validator_exe is None:
         raise Exception("Couldn't find validator")
     gen_GEN = os.path.join(GEN_DIRNAME, GEN_GEN)
-
-    sol_exe = os.path.join(SOL_DIRNAME, SOL_FILENAME)
 
     # Count non-trivial lines in GEN and establish which external
     # files are needed for input generation
@@ -509,6 +401,11 @@ def build_gen_list(base_dir, task_type, yaml_conf):
                     functools.partial(compile_src, validator_src,
                                       validator_exe, validator_lang),
                     "compile the validator"))
+    actions.append(([sol_src],
+                    [sol_exe],
+                    functools.partial(compile_src, sol_src, sol_exe, sol_lang),
+                    "compile the solution"))
+
     actions.append(([gen_GEN, gen_exe, validator_exe] + copy_files,
                     [os.path.join(INPUT_DIRNAME, 'input%d.txt' % (x))
                      for x in range(0, testcase_num)],
@@ -550,7 +447,6 @@ def build_action_list(base_dir, task_type, yaml_conf):
     actions = []
     gen_actions, in_out_files = build_gen_list(base_dir, task_type, yaml_conf)
     actions += gen_actions
-    actions += build_sols_list(base_dir, task_type, in_out_files, yaml_conf)
     actions += build_checker_list(base_dir, task_type)
     actions += build_text_list(base_dir, task_type)
     return actions
@@ -737,24 +633,14 @@ def main():
     elif options.all:
         print("Making all targets")
         print()
-        try:
-            execute_multiple_targets(base_dir, exec_tree,
-                                     generated_list, debug=options.debug,
-                                     assume=assume)
-
-        # After all work, possibly clean the left-overs of testing
-        finally:
-            clean_test_env()
+        execute_multiple_targets(base_dir, exec_tree,
+                                 generated_list, debug=options.debug,
+                                 assume=assume)
 
     else:
-        try:
-            execute_multiple_targets(base_dir, exec_tree,
-                                     options.targets, debug=options.debug,
-                                     assume=assume)
-
-        # After all work, possibly clean the left-overs of testing
-        finally:
-            clean_test_env()
+        execute_multiple_targets(base_dir, exec_tree,
+                                 options.targets, debug=options.debug,
+                                 assume=assume)
 
 if __name__ == '__main__':
     main()
