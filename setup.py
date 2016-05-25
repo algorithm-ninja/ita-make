@@ -3,7 +3,7 @@
 from setuptools import setup, find_packages
 
 setup(name='itamake',
-      version='0.1.0',
+      version='0.1.1',
       description='A stripped down cmsMake which *only* makes, nothing more.',
       author='Algorithm Ninja',
       author_email='algorithm@ninja',
